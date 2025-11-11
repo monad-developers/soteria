@@ -40,7 +40,7 @@ fn main() -> Result<()> {
                 }
             }
             Err(err) => {
-                let message = format!("{} :: error :: {}", target.path.display(), err);
+                let message = format!("{}\nerror\n{}", target.path.display(), err);
                 println!("{}", message.red());
             }
         }
@@ -49,10 +49,10 @@ fn main() -> Result<()> {
     if !mismatches.is_empty() {
         let message = format!("{} mismatches detected.", mismatches.len());
         if args.ignore_error {
-            println!("\n{}", message.yellow());
+            println!("{}", message.yellow());
         } else {
             println!("{}", message.red());
-            return Err(anyhow!("expected hash mismatch"));
+            std::process::exit(1);
         }
     }
 
@@ -89,10 +89,6 @@ impl CliArgs {
         let mut inputs = Vec::new();
         inputs.extend(self.input.iter().cloned());
         inputs.extend(self.paths.iter().cloned());
-        if inputs.is_empty() {
-            inputs.push(PathBuf::from("src/logs"));
-            inputs.push(PathBuf::from("src/accountConfigs"));
-        }
         inputs
     }
 }
@@ -105,10 +101,6 @@ struct TransactionLog {
     calldata: String,
     operation: Option<String>,
     current_nonce: u64,
-    #[serde(default)]
-    safe_address: Option<String>,
-    #[serde(default, rename = "final_signer")]
-    final_signer: Option<String>,
     expected_hash: Option<String>,
     #[serde(default, deserialize_with = "string_or_number_opt")]
     safe_tx_gas: Option<String>,
@@ -138,30 +130,29 @@ struct Target {
 impl Report {
     fn render_line(&self) -> String {
         let path = self.path.display().to_string();
-        let safe = format!("safe={}", self.safe_address_used);
+        let safe = format!("safe address = {}", self.safe_address_used);
 
         match (&self.expected_hash, self.matched) {
             (Some(_), Some(true)) => {
-                let hash = format!("hash={} (expected)", self.computed_hash);
-                format!("{} :: {} :: {}", path.cyan(), hash.green(), safe.magenta())
+                let hash = format!("computed hash = {} (expected)", self.computed_hash);
+                format!("{}:\n{}\n{}", path.cyan(), hash.green(), safe.magenta())
             }
             (Some(expected), Some(false)) => {
-                let hash = format!("hash={}", self.computed_hash);
-                let expected_segment = format!("expected {}", expected);
+                let hash = format!("computed hash = {} (mismatch)", self.computed_hash);
+                let expected_segment = format!("expected hash = {}", expected);
                 format!(
-                    "{} :: {} :: {} :: {} :: {}",
+                    "{}:\n{}\n{}\n{}",
                     path.cyan(),
                     hash.red(),
                     expected_segment.yellow(),
                     safe.magenta(),
-                    "mismatch".bright_red()
                 )
             }
             (Some(expected), None) => {
-                let hash = format!("hash={}", self.computed_hash);
-                let expected_segment = format!("expected {}", expected);
+                let hash = format!("computed hash = {}", self.computed_hash);
+                let expected_segment = format!("expected hash = {}", expected);
                 format!(
-                    "{} :: {} :: {} :: {}",
+                    "{}:\n{}\n{}\n{}",
                     path.cyan(),
                     hash.cyan(),
                     expected_segment.yellow(),
@@ -169,8 +160,8 @@ impl Report {
                 )
             }
             (None, _) => {
-                let hash = format!("hash={}", self.computed_hash);
-                format!("{} :: {} :: {}", path.cyan(), hash.bright_white(), safe.magenta())
+                let hash = format!("computed hash = {}", self.computed_hash);
+                format!("{}:\n{}\n{}\n", path.cyan(), hash.bright_white(), safe.magenta())
             }
         }
     }
@@ -241,8 +232,6 @@ fn process_file(
 
     let safe_address_str = safe_address
         .or(directory_safe)
-        .or(tx.safe_address.as_deref())
-        .or(tx.final_signer.as_deref())
         .ok_or_else(|| anyhow!("no Safe address provided"))?;
 
     let computed = compute_safe_tx_hash(&tx, safe_address_str, chain_id)?;
