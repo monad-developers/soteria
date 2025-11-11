@@ -120,30 +120,20 @@ fn print_help() {
 
 #[derive(Debug, Deserialize)]
 struct TransactionLog {
-    #[serde(rename = "address_to")]
     address_to: String,
-    #[serde(rename = "native_value", deserialize_with = "string_or_number")]
+    #[serde(default, deserialize_with = "string_or_number")]
     native_value: String,
     calldata: String,
-    #[serde(default)]
     operation: Option<String>,
-    #[serde(rename = "current_nonce")]
     current_nonce: u64,
-    #[serde(default, rename = "safe_address")]
-    safe_address: Option<String>,
-    #[serde(default, rename = "final_signer")]
-    final_signer: Option<String>,
-    #[serde(default, rename = "expected_hash")]
     expected_hash: Option<String>,
-    #[serde(default, rename = "safe_tx_gas", deserialize_with = "string_or_number_opt")]
+    #[serde(default, deserialize_with = "string_or_number_opt")]
     safe_tx_gas: Option<String>,
-    #[serde(default, rename = "base_gas", deserialize_with = "string_or_number_opt")]
+    #[serde(default, deserialize_with = "string_or_number_opt")]
     base_gas: Option<String>,
-    #[serde(default, rename = "gas_price", deserialize_with = "string_or_number_opt")]
+    #[serde(default, deserialize_with = "string_or_number_opt")]
     gas_price: Option<String>,
-    #[serde(default, rename = "gas_token")]
     gas_token: Option<String>,
-    #[serde(default, rename = "refund_receiver")]
     refund_receiver: Option<String>,
 }
 
@@ -199,11 +189,11 @@ impl Report {
     }
 }
 
-fn collect_targets(inputs: &[PathBuf], cli_safe: Option<&str>) -> Result<Vec<Target>> {
+fn collect_targets(inputs: &[PathBuf], safe_address: Option<&str>) -> Result<Vec<Target>> {
     let mut targets = Vec::new();
     for input in inputs {
         if input.is_dir() {
-            gather_directory_targets(input, cli_safe, &mut targets)?;
+            gather_directory_targets(input, safe_address, &mut targets)?;
         } else if input.is_file() {
             if !input
                 .extension()
@@ -221,7 +211,7 @@ fn collect_targets(inputs: &[PathBuf], cli_safe: Option<&str>) -> Result<Vec<Tar
                 continue;
             }
 
-            let directory_safe = if cli_safe.is_none() {
+            let directory_safe = if safe_address.is_none() {
                 if let Some(parent) = input.parent() {
                     if let Some(account_config) = find_account_config(parent)? {
                         load_account_config_safe(&account_config)?
@@ -251,17 +241,15 @@ fn is_empty_file(path: &Path) -> Result<bool> {
 fn process_file(
     path: &Path,
     chain_id: u64,
-    cli_safe: Option<&str>,
+    safe_address: Option<&str>,
     directory_safe: Option<&str>,
 ) -> Result<Report> {
     let data = fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
     let tx: TransactionLog = serde_json::from_str(&data)
         .with_context(|| format!("failed to parse {}", path.display()))?;
 
-    let safe_address_str = cli_safe
+    let safe_address_str = safe_address
         .or(directory_safe)
-        .or(tx.safe_address.as_deref())
-        .or(tx.final_signer.as_deref())
         .ok_or_else(|| anyhow!("no Safe address provided"))?;
 
     let computed = compute_safe_tx_hash(&tx, safe_address_str, chain_id)?;
@@ -340,7 +328,6 @@ fn find_account_config(dir: &Path) -> Result<Option<PathBuf>> {
 
 #[derive(Debug, Deserialize)]
 struct AccountConfig {
-    #[serde(rename = "safe_address")]
     safe_address: Option<String>,
 }
 
