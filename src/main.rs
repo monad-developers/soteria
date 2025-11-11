@@ -11,17 +11,22 @@ const SAFE_TX_TYPE: &str = "SafeTx(address to,uint256 value,bytes data,uint8 ope
 
 fn main() -> Result<()> {
     let args = CliArgs::from_env()?;
-    let mut files = collect_targets(&args.inputs)?;
+    let mut files = collect_targets(&args.inputs, args.safe_address.as_deref())?;
     if files.is_empty() {
         println!("No JSON files found. Provide one or more directories or files to process.");
         return Ok(());
     }
-    files.sort();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let mut mismatches = Vec::new();
 
-    for path in files {
-        match process_file(&path, args.chain_id, args.safe_address.as_deref()) {
+    for target in files {
+        match process_file(
+            &target.path,
+            args.chain_id,
+            args.safe_address.as_deref(),
+            target.directory_safe.as_deref(),
+        ) {
             Ok(report) => {
                 println!("{}", report.render_line());
                 if report.is_mismatch() {
@@ -29,14 +34,15 @@ fn main() -> Result<()> {
                 }
             }
             Err(err) => {
-                println!("{} :: error :: {}", path.display(), err);
+                println!("{} :: error :: {}", target.path.display(), err);
             }
         }
     }
 
     if !mismatches.is_empty() {
-        println!("\n{} mismatches detected.", mismatches.len());
-        if args.fail_on_mismatch {
+        if args.ignore_error {
+            println!("\n{} mismatches detected.", mismatches.len());
+        } else {
             return Err(anyhow!("expected hash mismatch"));
         }
     }
@@ -49,7 +55,7 @@ struct CliArgs {
     inputs: Vec<PathBuf>,
     chain_id: u64,
     safe_address: Option<String>,
-    fail_on_mismatch: bool,
+    ignore_error: bool,
 }
 
 impl CliArgs {
@@ -58,7 +64,7 @@ impl CliArgs {
         let mut inputs = Vec::new();
         let mut chain_id = 143u64;
         let mut safe_address = None;
-        let mut fail_on_mismatch = false;
+        let mut ignore_error = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -74,8 +80,8 @@ impl CliArgs {
                     let next = args.next().context("missing value for --safe-address")?;
                     safe_address = Some(next);
                 }
-                "--fail-on-mismatch" => {
-                    fail_on_mismatch = true;
+                "--ignore-error" => {
+                    ignore_error = true;
                 }
                 "--help" | "-h" => {
                     print_help();
@@ -96,7 +102,7 @@ impl CliArgs {
             inputs,
             chain_id,
             safe_address,
-            fail_on_mismatch,
+            ignore_error,
         })
     }
 }
@@ -107,7 +113,7 @@ fn print_help() {
     println!("\nOptions:");
     println!("  --chain-id <id>        Override the chain id (default: 143)");
     println!("  --safe-address <addr>  Fallback Safe address if files omit it");
-    println!("  --fail-on-mismatch     Return a non-zero exit status on mismatch");
+    println!("  --ignore-error         Return a zero exit status on mismatch");
     println!("  --input <path>         Directory or JSON file to include");
     println!("  -h, --help             Show this help text");
 }
@@ -150,6 +156,12 @@ struct Report {
     safe_address_used: String,
 }
 
+#[derive(Clone, Debug)]
+struct Target {
+    path: PathBuf,
+    directory_safe: Option<String>,
+}
+
 impl Report {
     fn render_line(&self) -> String {
         match (&self.expected_hash, self.matched) {
@@ -187,46 +199,68 @@ impl Report {
     }
 }
 
-fn collect_targets(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+fn collect_targets(inputs: &[PathBuf], cli_safe: Option<&str>) -> Result<Vec<Target>> {
+    let mut targets = Vec::new();
     for input in inputs {
         if input.is_dir() {
-            for entry in fs::read_dir(input).with_context(|| format!("cannot read directory {}", input.display()))? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
-                    if !is_empty_file(&path)? {
-                        files.push(path);
-                    }
-                }
-            }
+            gather_directory_targets(input, cli_safe, &mut targets)?;
         } else if input.is_file() {
-            if input
+            if !input
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
             {
-                if !is_empty_file(input)? {
-                    files.push(input.clone());
-                }
+                continue;
             }
+
+            if is_empty_file(input)? {
+                continue;
+            }
+
+            if is_account_config(input) {
+                // Account config files are not transaction payloads.
+                continue;
+            }
+
+            let directory_safe = if cli_safe.is_none() {
+                if let Some(parent) = input.parent() {
+                    if let Some(account_config) = find_account_config(parent)? {
+                        load_account_config_safe(&account_config)?
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            targets.push(Target {
+                path: input.clone(),
+                directory_safe,
+            });
         }
     }
-    Ok(files)
+    Ok(targets)
 }
 
 fn is_empty_file(path: &Path) -> Result<bool> {
     Ok(path.is_file() && fs::metadata(path)?.len() == 0)
 }
 
-fn process_file(path: &Path, chain_id: u64, fallback_safe: Option<&str>) -> Result<Report> {
+fn process_file(
+    path: &Path,
+    chain_id: u64,
+    cli_safe: Option<&str>,
+    directory_safe: Option<&str>,
+) -> Result<Report> {
     let data = fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
     let tx: TransactionLog = serde_json::from_str(&data)
         .with_context(|| format!("failed to parse {}", path.display()))?;
 
-    let safe_address_str = tx
-        .safe_address
-        .as_deref()
-        .or(fallback_safe)
+    let safe_address_str = cli_safe
+        .or(directory_safe)
+        .or(tx.safe_address.as_deref())
         .or(tx.final_signer.as_deref())
         .ok_or_else(|| anyhow!("no Safe address provided"))?;
 
@@ -243,6 +277,78 @@ fn process_file(path: &Path, chain_id: u64, fallback_safe: Option<&str>) -> Resu
         matched,
         safe_address_used: normalize_hex(safe_address_str),
     })
+}
+
+fn gather_directory_targets(dir: &Path, cli_safe: Option<&str>, targets: &mut Vec<Target>) -> Result<()> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("cannot read directory {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            && !is_empty_file(&path)?
+        {
+            entries.push(path);
+        }
+    }
+
+    let directory_safe = if cli_safe.is_none() {
+        if let Some(account_config) = entries.iter().find(|path| is_account_config(path)) {
+            load_account_config_safe(account_config)?
+        } else if let Some(account_config) = find_account_config(dir)? {
+            load_account_config_safe(&account_config)?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    for path in entries {
+        if is_account_config(&path) {
+            continue;
+        }
+
+        targets.push(Target {
+            path,
+            directory_safe: directory_safe.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+fn is_account_config(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("accountConfig.json"))
+        .unwrap_or(false)
+}
+
+fn find_account_config(dir: &Path) -> Result<Option<PathBuf>> {
+    for entry in fs::read_dir(dir).with_context(|| format!("cannot read directory {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() && is_account_config(&path) && !is_empty_file(&path)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountConfig {
+    #[serde(rename = "safe_address")]
+    safe_address: Option<String>,
+}
+
+fn load_account_config_safe(path: &Path) -> Result<Option<String>> {
+    let data = fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
+    let config: AccountConfig = serde_json::from_str(&data)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(config.safe_address)
 }
 
 fn compute_safe_tx_hash(tx: &TransactionLog, safe_address: &str, chain_id: u64) -> Result<String> {
