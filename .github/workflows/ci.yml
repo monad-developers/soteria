@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - 'master'
+  pull_request:
+    branches:
+      - 'master'
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+        - uses: actions/checkout@v4
+
+        - uses: dtolnay/rust-toolchain@stable
+          with:
+            toolchain: stable
+            components: rustfmt
+
+        - uses: Swatinem/rust-cache@v2
+          with:
+            cache-on-failure: true
+
+        - run: cargo build --locked --all-features -v
+        - run: cargo test --all-features -v
+        - run: cargo fmt --all -- --check
