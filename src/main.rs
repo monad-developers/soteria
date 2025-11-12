@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{ArgAction, Parser};
 use owo_colors::OwoColorize;
 use primitive_types::U256;
@@ -17,8 +17,7 @@ fn main() -> Result<()> {
     if targets.is_empty() {
         println!(
             "{}",
-            "No JSON files found. Provide one or more directories or files to process."
-                .yellow()
+            "No JSON files found. Provide one or more directories or files to process.".yellow()
         );
         return Ok(());
     }
@@ -161,7 +160,12 @@ impl Report {
             }
             (None, _) => {
                 let hash = format!("computed hash = {}", self.computed_hash);
-                format!("{}:\n{}\n{}\n", path.cyan(), hash.bright_white(), safe.magenta())
+                format!(
+                    "{}:\n{}\n{}\n",
+                    path.cyan(),
+                    hash.bright_white(),
+                    safe.magenta()
+                )
             }
         }
     }
@@ -226,7 +230,8 @@ fn process_file(
     safe_address: Option<&str>,
     directory_safe: Option<&str>,
 ) -> Result<Report> {
-    let data = fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
+    let data =
+        fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
     let tx: TransactionLog = serde_json::from_str(&data)
         .with_context(|| format!("failed to parse {}", path.display()))?;
 
@@ -249,9 +254,15 @@ fn process_file(
     })
 }
 
-fn gather_directory_targets(dir: &Path, cli_safe: Option<&str>, targets: &mut Vec<Target>) -> Result<()> {
+fn gather_directory_targets(
+    dir: &Path,
+    cli_safe: Option<&str>,
+    targets: &mut Vec<Target>,
+) -> Result<()> {
     let mut entries = Vec::new();
-    for entry in fs::read_dir(dir).with_context(|| format!("cannot read directory {}", dir.display()))? {
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("cannot read directory {}", dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         if path.is_file()
@@ -298,7 +309,9 @@ fn is_account_config(path: &Path) -> bool {
 }
 
 fn find_account_config(dir: &Path) -> Result<Option<PathBuf>> {
-    for entry in fs::read_dir(dir).with_context(|| format!("cannot read directory {}", dir.display()))? {
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("cannot read directory {}", dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() && is_account_config(&path) && !is_empty_file(&path)? {
@@ -314,7 +327,8 @@ struct AccountConfig {
 }
 
 fn load_account_config_safe(path: &Path) -> Result<Option<String>> {
-    let data = fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
+    let data =
+        fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
     let config: AccountConfig = serde_json::from_str(&data)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(config.safe_address)
