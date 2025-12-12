@@ -1,4 +1,4 @@
-name: 'soteria'
+name: 'run soteria CLI'
 description: 'uses the soteria CLI to validate safe transaction hashes in JSON log files'
 author: 'Monad Foundation'
 
