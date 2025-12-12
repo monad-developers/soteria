@@ -1,0 +1,201 @@
+name: 'run soteria CLI'
+description: 'uses the soteria CLI to validate safe transaction hashes in JSON log files'
+author: 'Monad Foundation'
+
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  directory:
+    description: 'Path to the directory containing JSON files to validate'
+    required: true
+  version:
+    description: 'Version of Soteria to use (e.g., "v0.1.5" or "latest")'
+    required: false
+    default: 'latest'
+  github-token:
+    description: 'GitHub token for API requests (to avoid rate limiting)'
+    required: false
+    default: ${{ github.token }}
+  fail-on-error:
+    description: 'Whether to fail the workflow if validation errors are found'
+    required: false
+    default: 'true'
+
+outputs:
+  validation-result:
+    description: 'The result of the validation (success or failure)'
+    value: ${{ steps.run-soteria.outputs.result }}
+  soteria-version:
+    description: 'The version of Soteria that was used'
+    value: ${{ steps.download.outputs.tag_name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Determine platform
+      id: platform
+      shell: bash
+      run: |
+        OS="${{ runner.os }}"
+        ARCH="${{ runner.arch }}"
+        
+        case "$OS" in
+          Linux)
+            case "$ARCH" in
+              X64)
+                echo "target=x86_64-unknown-linux-gnu" >> $GITHUB_OUTPUT
+                echo "asset_pattern=soteria-*linux*x86_64*" >> $GITHUB_OUTPUT
+                echo "fallback_pattern=soteria*linux*" >> $GITHUB_OUTPUT
+                ;;
+              ARM64)
+                echo "target=aarch64-unknown-linux-gnu" >> $GITHUB_OUTPUT
+                echo "asset_pattern=soteria-*linux*aarch64*" >> $GITHUB_OUTPUT
+                echo "fallback_pattern=soteria*linux*arm*" >> $GITHUB_OUTPUT
+                ;;
+              *)
+                echo "::error::Unsupported architecture: $ARCH"
+                exit 1
+                ;;
+            esac
+            ;;
+          macOS)
+            case "$ARCH" in
+              X64)
+                echo "target=x86_64-apple-darwin" >> $GITHUB_OUTPUT
+                echo "asset_pattern=soteria-*darwin*x86_64*" >> $GITHUB_OUTPUT
+                echo "fallback_pattern=soteria*darwin*" >> $GITHUB_OUTPUT
+                ;;
+              ARM64)
+                echo "target=aarch64-apple-darwin" >> $GITHUB_OUTPUT
+                echo "asset_pattern=soteria-*darwin*aarch64*" >> $GITHUB_OUTPUT
+                echo "fallback_pattern=soteria*darwin*arm*" >> $GITHUB_OUTPUT
+                ;;
+              *)
+                echo "::error::Unsupported architecture: $ARCH"
+                exit 1
+                ;;
+            esac
+            ;;
+          Windows)
+            echo "target=x86_64-pc-windows-msvc" >> $GITHUB_OUTPUT
+            echo "asset_pattern=soteria-*windows*x86_64*" >> $GITHUB_OUTPUT
+            echo "fallback_pattern=soteria*windows*" >> $GITHUB_OUTPUT
+            ;;
+          *)
+            echo "::error::Unsupported operating system: $OS"
+            exit 1
+            ;;
+        esac
+        
+        echo "os=$OS" >> $GITHUB_OUTPUT
+        echo "arch=$ARCH" >> $GITHUB_OUTPUT
+
+    - name: Download Soteria binary
+      id: download
+      uses: robinraju/release-downloader@v1
+      with:
+        repository: 'monad-developers/soteria'
+        latest: ${{ inputs.version == 'latest' }}
+        tag: ${{ inputs.version != 'latest' && inputs.version || '' }}
+        fileName: '*'
+        out-file-path: '${{ runner.temp }}/soteria-download'
+        extract: true
+        token: ${{ inputs.github-token }}
+
+    - name: Find and setup Soteria binary
+      id: setup
+      shell: bash
+      run: |
+        DOWNLOAD_DIR="${{ runner.temp }}/soteria-download"
+        INSTALL_DIR="${{ runner.temp }}/soteria-bin"
+        mkdir -p "$INSTALL_DIR"
+        
+        echo "Looking for Soteria binary in: $DOWNLOAD_DIR"
+        ls -la "$DOWNLOAD_DIR" || true
+        
+        # Look for the binary - try various patterns
+        BINARY=""
+        
+        # First, try to find a binary matching the platform
+        for pattern in "soteria" "soteria-${{ steps.platform.outputs.target }}" "soteria_${{ steps.platform.outputs.target }}"; do
+          if [ -f "$DOWNLOAD_DIR/$pattern" ]; then
+            BINARY="$DOWNLOAD_DIR/$pattern"
+            break
+          fi
+          if [ -f "$DOWNLOAD_DIR/${pattern}.exe" ]; then
+            BINARY="$DOWNLOAD_DIR/${pattern}.exe"
+            break
+          fi
+        done
+        
+        # If not found, search recursively for any soteria binary
+        if [ -z "$BINARY" ]; then
+          BINARY=$(find "$DOWNLOAD_DIR" -type f \( -name "soteria" -o -name "soteria.exe" -o -name "soteria-*" \) 2>/dev/null | head -n 1)
+        fi
+        
+        if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
+          echo "::warning::No pre-built binary found. Building from source..."
+          
+          # Install Rust if needed
+          if ! command -v cargo &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source "$HOME/.cargo/env"
+          fi
+          
+          # Install soteria from source
+          cargo install --git https://github.com/monad-developers/soteria.git --root "$INSTALL_DIR"
+          BINARY="$INSTALL_DIR/bin/soteria"
+        else
+          cp "$BINARY" "$INSTALL_DIR/soteria"
+          BINARY="$INSTALL_DIR/soteria"
+        fi
+        
+        # Make executable (on Unix systems)
+        if [ "${{ runner.os }}" != "Windows" ]; then
+          chmod +x "$BINARY"
+        fi
+        
+        echo "binary_path=$BINARY" >> $GITHUB_OUTPUT
+        echo "Binary location: $BINARY"
+        
+        # Verify binary
+        "$BINARY" --help || "$BINARY" -h || echo "Binary verification skipped"
+
+    - name: Run Soteria validation
+      id: run-soteria
+      shell: bash
+      run: |
+        BINARY="${{ steps.setup.outputs.binary_path }}"
+        DIRECTORY="${{ inputs.directory }}"
+        
+        echo "Running Soteria on directory: $DIRECTORY"
+        echo "Using binary: $BINARY"
+        
+        # Validate directory exists
+        if [ ! -d "$DIRECTORY" ]; then
+          echo "::error::Directory does not exist: $DIRECTORY"
+          exit 1
+        fi
+        
+        # Run soteria
+        set +e
+        OUTPUT=$("$BINARY" "$DIRECTORY" 2>&1)
+        EXIT_CODE=$?
+        set -e
+        
+        echo "$OUTPUT"
+        
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "result=success" >> $GITHUB_OUTPUT
+          echo "::notice::Soteria validation completed successfully"
+        else
+          echo "result=failure" >> $GITHUB_OUTPUT
+          if [ "${{ inputs.fail-on-error }}" == "true" ]; then
+            echo "::error::Soteria validation failed"
+            exit $EXIT_CODE
+          else
+            echo "::warning::Soteria validation found issues (exit code: $EXIT_CODE)"
+          fi
+        fi

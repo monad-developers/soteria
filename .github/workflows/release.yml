@@ -7,29 +7,116 @@ on:
 
 env:
   IMAGE_NAME: monadfoundation/soteria
+  CARGO_TERM_COLOR: always
 
 jobs:
-  artifacts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
+  binaries:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: soteria-linux-x86_64
 
-      - uses: dtolnay/rust-toolchain@stable
+          - name: linux arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: soteria-linux-arm64
+
+          # macOS Intel
+          - name: macos x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: soteria-darwin-x86_64
+
+          # macOS Apple Silicon
+          - name: macos arm64
+            runner: macos-26
+            target: aarch64-apple-darwin
+            artifact: soteria-darwin-arm64
+
+          # Windows x86_64
+          - name: windows x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: soteria-windows-x86_64
+
+          # Windows ARM64
+          - name: windows arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact: soteria-windows-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          targets: ${{ matrix.platform.target }}
           components: rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ matrix.platform.target }}
           cache-on-failure: true
 
-      - run: cargo build --release --locked --all-features -v
-                
-      - name: Upload release version artifact
-        uses: actions/upload-artifact@v4
+      - name: Build release binary
+        run: cargo build --release --locked --all-features --target ${{ matrix.platform.target }} -v
+
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p artifacts
+          cp target/${{ matrix.platform.target }}/release/soteria artifacts/
+          cd artifacts
+          tar -czvf ${{ matrix.platform.artifact }}.tar.gz soteria
+          rm soteria
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+          Copy-Item "target/${{ matrix.platform.target }}/release/soteria.exe" -Destination "artifacts/"
+          Compress-Archive -Path "artifacts/soteria.exe" -DestinationPath "artifacts/${{ matrix.platform.artifact }}.zip"
+          Remove-Item "artifacts/soteria.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
         with:
-          name: soteria
-          path: ./target/release/soteria
+          name: ${{ matrix.platform.artifact }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release assets
+    runs-on: ubuntu-latest
+    needs: [binaries]
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Update release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
 
   docker:
     runs-on: ubuntu-latest
@@ -53,6 +140,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: true
+          platforms: linux/amd64,linux/arm64
           sbom: true
           provenance: mode=max
           tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
