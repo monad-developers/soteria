@@ -489,7 +489,8 @@ fn encode_address(address: [u8; 20]) -> [u8; 32] {
 
 fn encode_u256(value: U256) -> [u8; 32] {
     let mut out = [0u8; 32];
-    value.to_big_endian(&mut out);
+    let bytes = value.to_big_endian();
+    out.copy_from_slice(&bytes);
     out
 }
 
