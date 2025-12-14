@@ -13,8 +13,10 @@ soteria /path/to/your/logs/directory
 ### Using GitHub Actions
 If you want to integrate soteria into your CI/CD pipeline, you can use the GitHub action:
 ```yaml
-uses: monad-developers/soteria-action@v0.1.6
-with:
+- name: Run soteria
+  id: soteria
+  uses: monad-developers/soteria-action@v0.1.7
+  with:
     directory: '/path/to/your/logs/directory'
 ```
 
